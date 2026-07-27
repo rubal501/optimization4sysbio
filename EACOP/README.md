@@ -1,10 +1,10 @@
-Implementación de *Evolutionary Algorithm for Complex-process Optimization* (Egea, Martí & Banga, 2009), compatible con la interfaz de SciMLBase.
+Implementación de *Evolutionary Algorithm for Complex-process Optimization* (Egea, Martí & Banga, 2009), compatible with SciMLBase.
 
 
 
 ## How ot use
 
-```
+```julia
 include("EACOP.jl")
 using .EACOPOptimizer. SciMLBase, Optim
 
