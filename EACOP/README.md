@@ -1,4 +1,4 @@
-Implementación de *Evolutionary Algorithm for Complex-process Optimization* (Egea, Martí & Banga, 2009), compatible with SciMLBase.
+Implementation of *Evolutionary Algorithm for Complex-process Optimization* (Egea, Martí & Banga, 2009), compatible with SciMLBase.
 
 
 
