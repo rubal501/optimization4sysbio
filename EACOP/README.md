@@ -1,13 +1,24 @@
 Implementación de *Evolutionary Algorithm for Complex-process Optimization* (Egea, Martí & Banga, 2009), compatible con la interfaz de SciMLBase.
 
-Componentes del artículo implementados:
-  * Población inicial por muestreo de hipercubo latino (mitad por calidad, mitad aleatoria).
-  * Combinación mediante hiper-rectángulos anchos y sesgados (ecs. 9-14).
-  * Actualización (1+1): un hijo solo entra reemplazando a su propio padre.
-  * Estrategia *go-beyond* (Algoritmo 1).
-  * Escape de óptimos locales mediante el contador `nstuck` / parámetro `nchange`.
-  * Restricciones tratadas con el término de penalización estática de la ec. 17
-    (norma L-∞ de las violaciones).
 
 
-# TODO:
+## How ot use
+
+```
+include("EACOP.jl")
+using .EACOPOptimizer. SciMLBase, Optim
+
+rosenbrock(x, p) = (p[1] - x[1])^2 + p[2] * (x[2] - x[1]^2)^2
+cons(res, x, p) = (res[1] = x[1]^2 + x[2]^2)
+
+f = OptimizationFunction(rosenbrock; cons = cons)
+prob = OptimizationProblem(f, zeros(2), [1.0, 100.0];
+                                  lb = [-5.0, -5.0], ub = [5.0, 5.0],
+                                  lcons = [-Inf], ucons = [1.0])
+
+sol = solve(prob, EACOP(penalty = 1e5); maxiters = 300)
+
+sol.u
+```
+
+## TODO:
