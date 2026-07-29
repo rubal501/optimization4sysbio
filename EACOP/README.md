@@ -1,8 +1,10 @@
-Implementation of *Evolutionary Algorithm for Complex-process Optimization* (Egea, Martí & Banga, 2009), compatible with SciMLBase.
+# EACOP.jl
 
 
+Implementation of *Evolutionary Algorithm for Complex-process Optimization*, compatible with SciMLBase.
 
-## How ot use
+
+## Example
 
 ```julia
 include("EACOP.jl")
@@ -22,3 +24,7 @@ sol.u
 ```
 
 ## TODO:
+- Do some benchmarks?
+
+## Reference:
+Egea, J. A., Martí, R., & Banga, J. R. (2010). An evolutionary method for complex-process optimization. Computers & Operations Research, 37(2), 315-324.
