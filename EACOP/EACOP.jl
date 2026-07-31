@@ -1,21 +1,21 @@
 """
     EACOP.jl
 
-Implementación sencilla del *Evolutionary Algorithm for Complex-process Optimization*
-(Egea, Martí & Banga, 2009), compatible con la interfaz de SciMLBase.
+Simple implementation of the *Evolutionary Algorithm for Complex-process Optimization*
+(Egea, Martí & Banga, 2009), compatible with the `SciMLBase` optimization interface.
 
-Componentes del artículo implementados:
-  * Población inicial por muestreo de hipercubo latino (mitad por calidad, mitad aleatoria).
-  * Combinación mediante hiper-rectángulos anchos y sesgados (ecs. 9-14).
-  * Actualización (1+1): un hijo solo entra reemplazando a su propio padre.
-  * Estrategia *go-beyond* (Algoritmo 1).
-  * Escape de óptimos locales mediante el contador `nstuck` / parámetro `nchange`.
-  * Restricciones tratadas con el término de penalización estática de la ec. 17
-    (norma L-∞ de las violaciones).
+Implemented components from the article:
+  * Initial population via Latin Hypercube Sampling (half by quality, half random).
+  * Combination via wide and biased hyper-rectangles (Eqs. 9–14).
+  * (1+1) selection/update: an offspring only enters the population by replacing its own parent.
+  * *Go-beyond* strategy (Algorithm 1).
+  * Local optima escape mechanism using the `nstuck` counter and `nchange` parameter.
+  * Constraints handled via the static penalty term from Eq. 17 
+    (L-∞ norm of constraint violations).
 
-Además se respeta `prob.sense`: con `MaxSense` se minimiza internamente `-C(x)`.
+Additionally, `prob.sense` is respected: when `MaxSense` is specified, `-C(x)` is minimized internally.
 
-No incluye búsqueda local, tal y como se discute en la Sección 1 del artículo.
+Does not include the local search phase, as discussed in Section 1 of the article.
 """
 module EACOPOptimizer
 
@@ -25,17 +25,17 @@ using Random
 
 export EACOP
 
-# `Infeasible` no existe en versiones antiguas de SciMLBase
+# `Infeasible` does not exist in older versions of SciMLBase
 const INFEASIBLE = isdefined(SciMLBase.ReturnCode, :Infeasible) ?
                    SciMLBase.ReturnCode.Infeasible : SciMLBase.ReturnCode.Failure
 
 """
     EACOPCache(prob)
 
-Caché mínima que satisface la interfaz de `SciMLBase.AbstractOptimizationCache`.
-`build_solution` solo admite una caché como primer argumento (no un
-`OptimizationProblem`), y accede a `cache.p` y `cache.f` para el indexado
-simbólico y los observables. Se guarda también el problema por comodidad.
+Minimal cache that satisfies the `SciMLBase.AbstractOptimizationCache` interface.
+`build_solution` only accepts a cache as its first argument (not an 
+`OptimizationProblem`), and accesses `cache.p` and `cache.f` for symbolic 
+indexing and observables. The original problem is also stored for convenience.
 """
 struct EACOPCache{F, P, PR} <: SciMLBase.AbstractOptimizationCache
     f::F
@@ -46,21 +46,25 @@ end
 EACOPCache(prob) = EACOPCache(prob.f, prob.p, prob)
 
 # ---------------------------------------------------------------------------
-# 1. Definición del algoritmo y sus hiperparámetros
+# 1. Algorithm Definition and Hyperparameters
 # ---------------------------------------------------------------------------
 
 """
     EACOP(; pop_multiplier = 10, nchange = 22, penalty = 1e6, rng = Random.default_rng())
 
-- `pop_multiplier`: número aproximado de soluciones nuevas generadas por iteración,
-  por variable de decisión (10·nvar en el artículo). Determina también el tamaño
-  del conjunto diverso inicial `m`.
-- `nchange`: número de iteraciones consecutivas sin mejora tras las cuales un
-  miembro de la población se considera atrapado y se reemplaza por una solución
-  aleatoria (valor 22 determinado experimentalmente en la Sección 3.1).
-- `penalty`: parámetro `w` de la ec. 17, constante durante toda la optimización.
-  Solo se usa si el problema tiene restricciones (`lcons`/`ucons`). Debe ser lo
-  bastante grande como para dominar la escala del objetivo.
+Evolutionary Algorithm for Complex-process Optimization solver.
+
+## Keyword Arguments
+- `pop_multiplier`: Approximate number of new solutions generated per iteration, 
+  per decision variable (`10 * nvar` in the article). Also determines the size 
+  of the initial diverse sample set `m`.
+- `nchange`: Number of consecutive iterations without improvement after which a 
+  population member is considered trapped and is replaced by a random solution 
+  (value of 22 determined experimentally in Section 3.1).
+- `penalty`: Parameter `w` from Eq. 17, kept constant throughout the optimization. 
+  Only used if the problem has constraints (`lcons`/`ucons`). Must be large 
+  enough to dominate the scale of the objective function.
+- `rng`: Random number generator instance.
 """
 struct EACOP{R} <: SciMLBase.AbstractOptimizationAlgorithm
     pop_multiplier::Int
@@ -74,15 +78,15 @@ EACOP(; pop_multiplier = 10, nchange = 22, penalty = 1e6,
     EACOP(pop_multiplier, nchange, penalty, rng)
 
 # ---------------------------------------------------------------------------
-# 2. Utilidades
+# 2. Utility Functions
 # ---------------------------------------------------------------------------
 
 """
     population_size(nvar, mult)
 
-Tamaño de población `b`: el primer número par que cumple `b² - b ≥ mult·nvar`
-(Tabla 1 del artículo). Se impone un mínimo de 6 para que el sesgo β esté bien
-definido (denominador `b - 2`).
+Compute population size `b`: the first even number satisfying `b² - b ≥ mult * nvar`
+(Table 1 of the article). A minimum size of 6 is enforced so that the bias β is 
+well-defined (denominator `b - 2`).
 """
 function population_size(nvar::Integer, mult::Integer)
     target = mult * nvar
@@ -96,18 +100,18 @@ end
 """
     combine!(xnew, pop, i, j, b, lb, ub, rng)
 
-Genera una solución dentro del hiper-rectángulo construido *alrededor* del
-miembro `i` y sesgado por la calidad relativa de `i` frente a `j`
-(ecuaciones 9-14). La población debe estar ordenada por calidad.
+Generate an offspring solution within the hyper-rectangle constructed *around* 
+member `i` and biased by the relative quality of `i` compared to `j` 
+(Equations 9–14). The population matrix `pop` must be sorted by quality.
 """
 function combine!(xnew, pop, i::Int, j::Int, b::Int, lb, ub, rng)
-    α = i < j ? 1.0 : -1.0            # ec. 12
-    β = (abs(j - i) - 1) / (b - 2)    # ec. 13
+    α = i < j ? 1.0 : -1.0            # Eq. 12
+    β = (abs(j - i) - 1) / (b - 2)    # Eq. 13
     @inbounds for k in eachindex(xnew)
-        d  = (pop[k, j] - pop[k, i]) / 2          # ec. 11
-        c1 = pop[k, i] - d * (1 + α * β)          # ec. 9
-        c2 = pop[k, i] + d * (1 - α * β)          # ec. 10
-        r  = rand(rng)                            # ec. 14
+        d  = (pop[k, j] - pop[k, i]) / 2          # Eq. 11
+        c1 = pop[k, i] - d * (1 + α * β)          # Eq. 9
+        c2 = pop[k, i] + d * (1 - α * β)          # Eq. 10
+        r  = rand(rng)                            # Eq. 14
         xnew[k] = clamp(c1 + (c2 - c1) * r, lb[k], ub[k])
     end
     return xnew
@@ -116,18 +120,18 @@ end
 """
     go_beyond(f, xpr, fpr, xch, fch, lb, ub, rng)
 
-Algoritmo 1: mientras el hijo siga superando a su padre, se crea una nueva
-solución "más allá" en la dirección padre → hijo. Tras dos mejoras consecutivas
-se duplica el área de generación (Λ ← Λ/2).
+Algorithm 1: As long as the offspring continues to outperform its parent, generate 
+a new solution "beyond" in the parent → offspring direction. After two consecutive 
+improvements, the generation area is doubled (`Λ ← Λ/2`).
 
-Devuelve `(x, f)` de la mejor solución encontrada en la cadena.
+Returns `(x, f)` of the best solution found along the trajectory.
 """
 function go_beyond(f, xpr, fpr, xch, fch, lb, ub, rng)
     improvement = 1
     Λ = 1.0
     xnew = similar(xch)
     while fch < fpr
-        # Rectángulo definido por [xch - (xpr - xch)/Λ , xch]
+        # Rectangle defined by [xch - (xpr - xch)/Λ , xch]
         @inbounds for k in eachindex(xnew)
             lo = xch[k] - (xpr[k] - xch[k]) / Λ
             hi = xch[k]
@@ -136,21 +140,21 @@ function go_beyond(f, xpr, fpr, xch, fch, lb, ub, rng)
         end
         fnew = f(xnew)
 
-        xpr, fpr = xch, fch          # el hijo pasa a ser el padre
-        xch, fch = copy(xnew), fnew  # la nueva solución es el nuevo hijo
+        xpr, fpr = xch, fch  # Offspring becomes the new parent
+        xch, fch = copy(xnew), fnew  # New solution becomes the new offspring
 
         improvement += 1
         if improvement == 2
-            Λ /= 2                   # duplica el área de búsqueda
+            Λ /= 2           # Double the search area
             improvement = 0
         end
     end
-    # Al salir del bucle, `xpr` es la última solución que sí mejoró.
+    # Upon exiting the loop, `xpr` holds the last solution that successfully improved.
     return xpr, fpr
 end
 
 # ---------------------------------------------------------------------------
-# 3. Sobrecarga de solve
+# 3. SciMLBase.solve Overload
 # ---------------------------------------------------------------------------
 
 function SciMLBase.solve(prob::SciMLBase.OptimizationProblem, alg::EACOP;
@@ -158,7 +162,7 @@ function SciMLBase.solve(prob::SciMLBase.OptimizationProblem, alg::EACOP;
 
     lb, ub = prob.lb, prob.ub
     (lb === nothing || ub === nothing) &&
-        throw(ArgumentError("EACOP requiere cotas finitas `lb` y `ub`."))
+        throw(ArgumentError("EACOP requires finite bounds `lb` and `ub`."))
 
     t0 = time()
 
@@ -167,11 +171,11 @@ function SciMLBase.solve(prob::SciMLBase.OptimizationProblem, alg::EACOP;
     lb   = collect(float.(lb))
     ub   = collect(float.(ub))
 
-    # --- Sentido de la optimización ------------------------------------------
-    # EACOP minimiza siempre; con MaxSense se minimiza internamente -C(x).
+    # --- Optimization Sense --------------------------------------------------
+    # EACOP always minimizes; with MaxSense, -C(x) is minimized internally.
     sgn = (prob.sense === SciMLBase.MaxSense) ? -1.0 : 1.0
 
-    # --- Restricciones: penalización estática (ec. 17) ------------------------
+    # --- Constraints: Static Penalty (Eq. 17) --------------------------------
     has_cons = hasproperty(prob.f, :cons) && (prob.f.cons !== nothing) &&
                (prob.lcons !== nothing) && (prob.ucons !== nothing)
     ncons    = has_cons ? length(prob.lcons) : 0
@@ -179,30 +183,30 @@ function SciMLBase.solve(prob::SciMLBase.OptimizationProblem, alg::EACOP;
     lcons    = has_cons ? collect(float.(prob.lcons)) : Float64[]
     ucons    = has_cons ? collect(float.(prob.ucons)) : Float64[]
 
-    # Norma L-∞ de la violación de restricciones (0 si el punto es factible)
+    # L-∞ norm of constraint violations (0.0 if the point is feasible)
     function violation(x)
         has_cons || return 0.0
         prob.f.cons(cons_buf, x, prob.p)
         v = 0.0
         @inbounds for i in 1:ncons
-            # Las igualdades se expresan como lcons[i] == ucons[i]
+            # Equality constraints are expressed as lcons[i] == ucons[i]
             vi = max(lcons[i] - cons_buf[i], cons_buf[i] - ucons[i], 0.0)
             v  = max(v, vi)
         end
         return v
     end
 
-    # Objetivo original, sin transformar (para reportar el resultado)
+    # Original, un-transformed objective (used for reporting the final result)
     obj(x) = prob.f(x, prob.p)
 
-    # Objetivo interno: F(x) = ±C(x) + w · max{viol}   con contador de evaluaciones
+    # Internal objective: F(x) = ±C(x) + w * max{viol} with function evaluation counter
     fevals = Ref(0)
     function f(x)
         fevals[] += 1
         return sgn * obj(x) + alg.penalty * violation(x)
     end
 
-    # --- A. Población inicial -------------------------------------------------
+    # --- A. Initial Population -----------------------------------------------
     b = population_size(nvar, alg.pop_multiplier)
     m = max(alg.pop_multiplier * nvar, b)
 
@@ -211,21 +215,21 @@ function SciMLBase.solve(prob::SciMLBase.OptimizationProblem, alg::EACOP;
 
     order = sortperm(fS)
     half  = b ÷ 2
-    best_idx = order[1:half]                                  # mitad por calidad
+    best_idx = order[1:half]                                       # Half selected by quality
     rest     = order[half+1:end]
-    rand_idx = rest[randperm(rng, length(rest))[1:half]]       # mitad aleatoria
+    rand_idx = rest[randperm(rng, length(rest))[1:half]]       # Half selected randomly
     sel      = vcat(best_idx, rand_idx)
 
     pop  = Matrix{Float64}(S[:, sel])
     fpop = fS[sel]
     nstuck = zeros(Int, b)
 
-    # Mejor solución global
+    # Global best solution
     kbest  = argmin(fpop)
     best_x = copy(pop[:, kbest])
     best_f = fpop[kbest]
 
-    # Buffers reutilizables
+    # Reusable buffers
     xnew  = zeros(nvar)
     child = zeros(nvar)
 
@@ -235,7 +239,7 @@ function SciMLBase.solve(prob::SciMLBase.OptimizationProblem, alg::EACOP;
     while iter < maxiters
         iter += 1
 
-        # Ordenar la población por calidad (requisito de las ecs. 12-13)
+        # Sort population by quality (required for Eqs. 12–13)
         p = sortperm(fpop)
         pop, fpop, nstuck = pop[:, p], fpop[p], nstuck[p]
 
@@ -244,7 +248,7 @@ function SciMLBase.solve(prob::SciMLBase.OptimizationProblem, alg::EACOP;
         labeled = falses(b)
 
         for i in 1:b
-            # --- B. Combinación: b-1 hijos alrededor del miembro i -----------
+            # --- B. Combination: b - 1 offspring around member i -------------
             fchild = Inf
             for j in 1:b
                 j == i && continue
@@ -256,7 +260,7 @@ function SciMLBase.solve(prob::SciMLBase.OptimizationProblem, alg::EACOP;
                 end
             end
 
-            # --- C. Actualización (1+1) + go-beyond --------------------------
+            # --- C. (1+1) Update + Go-Beyond ---------------------------------
             if fchild < fpop[i]
                 xg, fg = go_beyond(f, view(pop, :, i), fpop[i],
                                    copy(child), fchild, lb, ub, rng)
@@ -270,7 +274,7 @@ function SciMLBase.solve(prob::SciMLBase.OptimizationProblem, alg::EACOP;
 
         pop, fpop = newpop, newfpop
 
-        # --- D. Escape de óptimos locales -----------------------------------
+        # --- D. Local Optima Escape Mechanism --------------------------------
         for i in 1:b
             if labeled[i]
                 nstuck[i] = 0
@@ -286,7 +290,7 @@ function SciMLBase.solve(prob::SciMLBase.OptimizationProblem, alg::EACOP;
             end
         end
 
-        # Actualizar el mejor global
+        # Update global best
         kbest = argmin(fpop)
         if fpop[kbest] < best_f
             best_f = fpop[kbest]
@@ -299,9 +303,9 @@ function SciMLBase.solve(prob::SciMLBase.OptimizationProblem, alg::EACOP;
         end
     end
 
-    # --- E. Empaquetar el resultado ------------------------------------------
-    # Se reporta el valor *original* del objetivo (sin signo invertido ni
-    # penalización); `best_f` es el valor interno minimizado.
+    # --- E. Package Result ---------------------------------------------------
+    # Report the *original* objective value (without sign inversion or penalty);
+    # `best_f` represents the internal minimized value.
     best_obj  = obj(best_x)
     best_viol = violation(best_x)
 
@@ -317,8 +321,8 @@ function SciMLBase.solve(prob::SciMLBase.OptimizationProblem, alg::EACOP;
                                     retcode = retcode,
                                     stats = stats,
                                     original = (; popsize = b,
-                                                  penalized_objective = best_f,
-                                                  max_violation = best_viol))
+                                                penalized_objective = best_f,
+                                                max_violation = best_viol))
 end
 
 end # module
